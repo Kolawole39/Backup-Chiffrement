@@ -1,0 +1,166 @@
+# ----------------------------------------------------------------
+# Makefile for doing easy backup using rsync in TimeMachine style
+# ----------------------------------------------------------------
+# Author :  Alexandre Norman
+# Date :    06.10.2015
+# Version : v1.0.4
+# License : GPL v3
+# ----------------------------------------------------------------
+
+# ----------------------------------------------------------------
+REMOTE_HOST = $(shell grep REMOTE_HOST configuration.txt|cut -d= -f2)
+WHAT_TO_SAVE = $(shell grep WHAT_TO_SAVE configuration.txt|cut -d= -f2)
+DESTINATION =  $(shell grep DESTINATION configuration.txt|cut -d= -f2)
+EXCLUSION   =  $(shell grep EXCLUSION configuration.txt|cut -d= -f2)
+DATABASE_OPTIONS = $(shell grep DATABASE_OPTIONS configuration.txt|cut -d= -f2)
+# ----------------------------------------------------------------
+
+
+TARGET      =  $(shell echo backup_`date +%Y%m%d-%H%M%S`)
+FANION      =  $(DESTINATION)/.fanion_backup
+
+# rsync options
+RSYNC_ARGS  = -rlptDvog -q --copy-unsafe-links
+
+# Directory name for databases backups
+DB_BACKUPDIR = MySql_backup
+
+
+# this returns directory part without leading /
+# example :
+#   /home/xael -> returns home/xael
+#   xael@localhost:/home/xael -> returns home/xael
+DDIR     = `echo $@|cut -d'/' -f2-`
+
+# this returns a / if destination is a directory, else nothing
+DIRS_NEED_SLASH = $(shell /bin/bash -c 'if [ "`file $@ |cut -d" " -f2`" == "directory" ];then echo "/"; else echo ""; fi')
+
+# Databases to save
+ifneq ($(DATABASE_OPTIONS), NONE)
+ifeq ($(REMOTE_HOST),localhost)
+DB_NAMES = $(shell /bin/bash -c "echo 'show databases;'|mysql $(DATABASE_OPTIONS) -s -r" 2> /dev/null)
+else
+DB_NAMES = $(shell ssh $(REMOTE_HOST)  "/bin/bash -c \"echo 'show databases;'|mysql $(DATABASE_OPTIONS) -s -r\"")
+endif
+endif
+
+
+# Default : display doc
+all:
+	@echo "---------------------------------------------------------------"
+	@echo "Makefile for doing backup"
+	@echo "---------------------------------------------------------------"
+	@echo "Usage : "
+	@echo "  make backup [TARGET=backup_date-hour]"
+	@echo "  make files [TARGET=backup_date-hour]"
+	@echo "  make databases [TARGET=backup_date-hour]"
+	@echo ""
+	@echo "  backup : save both files and databases"
+	@echo "  files : save only files"
+	@echo "  databases : save only databases"
+	@echo ""
+	@echo "  fanionCheck : check if last backup is older than 31 days"
+	@echo "---------------------------------------------------------------"
+
+# Organize backup
+backup: check
+	@echo "---------------------------------------------------------------"
+	@echo "Begining backup - `date`"
+	@make -f $(lastword $(MAKEFILE_LIST)) fanionEC
+	@echo "---------------------------------------------------------------"
+	@echo "TARGET Directory $(DESTINATION)/${TARGET}"
+	@make -f $(lastword $(MAKEFILE_LIST)) files TARGET=$(TARGET)
+ifneq ($(DATABASE_OPTIONS), NONE)
+	@make -f $(lastword $(MAKEFILE_LIST)) databases TARGET=$(TARGET)
+endif
+	@make -f $(lastword $(MAKEFILE_LIST)) link TARGET=$(TARGET)
+	@echo "---------------------------------------------------------------"
+	@make -f $(lastword $(MAKEFILE_LIST)) fanionOK
+	@echo "Terminated - `date`"
+	@echo "---------------------------------------------------------------"
+
+
+# backup files
+files: check
+	@make -f $(lastword $(MAKEFILE_LIST)) $(WHAT_TO_SAVE) TARGET=$(TARGET)
+
+# Check if the destination is available
+check:
+	@echo "---------------------------------------------------------------"
+	@echo "Checking $(DESTINATION) availability"
+	@ls $(DESTINATION) >/dev/null 2>&1
+
+
+# Rule to save a directory or a file
+$(WHAT_TO_SAVE):
+	@echo "---------------------------------------------------------------"
+ifeq ($(REMOTE_HOST),localhost)
+	@echo "Saving : $@$(DIRS_NEED_SLASH)"
+else
+	@echo "Saving : $(REMOTE_HOST):$@$(DIRS_NEED_SLASH)"
+endif
+	@echo "  destination : $(DESTINATION)/$(TARGET)/${DDIR}"
+	@echo "  linking to : $(DESTINATION)/current/${DDIR}"
+	@mkdir -p $(DESTINATION)/$(TARGET)/$(DDIR)
+ifeq ($(REMOTE_HOST),localhost)
+	@rsync $(RSYNC_ARGS) --delete --exclude-from=$(EXCLUSION) --link-dest=$(DESTINATION)/current/${DDIR} $@$(DIRS_NEED_SLASH) $(DESTINATION)/$(TARGET)/${DDIR}
+else
+	@rsync $(RSYNC_ARGS) --delete --exclude-from=$(EXCLUSION) --link-dest=$(DESTINATION)/current/${DDIR} $(REMOTE_HOST):$@$(DIRS_NEED_SLASH) $(DESTINATION)/$(TARGET)/${DDIR}
+endif
+
+# Make a link to current directory
+link:
+	@echo "---------------------------------------------------------------"
+	@echo "Assigning current to $(DESTINATION)/$(TARGET)"
+	@rm -f $(DESTINATION)/current
+	@ln -s $(DESTINATION)/$(TARGET) $(DESTINATION)/current
+
+
+
+# Backup databases
+databases: check
+	@echo "---------------------------------------------------------------"
+	@echo "Saving Mysql Databases"
+	@make -f $(lastword $(MAKEFILE_LIST)) $(DB_NAMES) TARGET=$(TARGET)
+
+$(DB_NAMES):
+	@echo "  Saving database : $@"
+	@mkdir -p $(DESTINATION)/$(TARGET)/$(DB_BACKUPDIR)
+ifeq ($(REMOTE_HOST),localhost)
+	@mysqldump $(DATABASE_OPTIONS) --single-transaction $@ |gzip -9 -c > $(DESTINATION)/$(TARGET)/$(DB_BACKUPDIR)/$@.sql.gz
+else
+	@ssh $(REMOTE_HOST) "mysqldump $(DATABASE_OPTIONS) --single-transaction $@ |gzip -9 -c" > $(DESTINATION)/$(TARGET)/$(DB_BACKUPDIR)/$@.sql.gz
+endif
+
+
+
+
+# touch EC
+fanionEC: fanionRaz
+	@echo "---------------------------------------------------------------"
+	@echo "Touching $(FANION).ec"
+	@touch $(FANION).ec
+
+# touch OK
+fanionOK: fanionRaz
+	@echo "---------------------------------------------------------------"
+	@echo "Touching $(FANION).ok"
+	@touch $(FANION).ok
+
+# clean fanion
+fanionRaz:
+	@rm -f $(FANION).*
+
+# check that fanion is less than 1 month old
+fanionCheck:
+	@find $(FANION).ok -mtime -31 |grep $(FANION)>/dev/null 2>&1
+
+
+
+
+# reset defaul rules
+.SUFFIXES:
+
+.PHONY: check backup files databases $(WHAT_TO_SAVE) $(DB_NAMES)
+
+# --<EOF>---------------------------------------------------------

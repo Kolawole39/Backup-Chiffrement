@@ -1,0 +1,5 @@
+REMOTE_HOST=localhost
+WHAT_TO_SAVE=/media/gerry/Samsung/Mélange
+DESTINATION=/media/gerry/Samsung/Sauvegarde
+EXCLUSION=
+DATABASE_OPTION=NONE
